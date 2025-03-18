@@ -1,18 +1,18 @@
-package com.illiad.handler.v4;
+package com.illiad.handler.v5;
 
 import com.illiad.codec.HeaderEncoder;
-import com.illiad.codec.v4.V4ClientDecoder;
-import com.illiad.codec.v4.V4ClientEncoder;
+
+import com.illiad.codec.v5.V5ClientEncoder;
+import com.illiad.codec.v5.V5CommandResDecoder;
 import com.illiad.config.Params;
 import com.illiad.handler.RelayHandler;
-import com.illiad.handler.ResponseHandler;
 import com.illiad.handler.Utils;
 import com.illiad.security.Ssl;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.*;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
-import io.netty.handler.codec.socksx.v4.Socks4CommandRequest;
+import io.netty.handler.codec.socksx.v5.Socks5CommandRequest;
 import io.netty.handler.ssl.SslHandler;
 import io.netty.util.concurrent.FutureListener;
 import io.netty.util.concurrent.Promise;
@@ -20,28 +20,28 @@ import org.springframework.stereotype.Component;
 
 @Component
 @ChannelHandler.Sharable
-public final class V4ConnectHandler extends SimpleChannelInboundHandler<Socks4CommandRequest> {
+public final class V5ConnectHandler extends SimpleChannelInboundHandler<Socks5CommandRequest> {
 
     private final Ssl ssl;
     private final Params params;
     private final HeaderEncoder headerEncoder;
-    private final V4ClientEncoder v4ClientEncoder;
+    private final V5ClientEncoder v5ClientEncoder;
     private final Utils utils;
     private final Bootstrap b = new Bootstrap();
 
-    public V4ConnectHandler(Ssl ssl, Params params, HeaderEncoder headerEncoder, V4ClientEncoder v4ClientEncoder, Utils utils) {
+    public V5ConnectHandler(Ssl ssl, Params params, HeaderEncoder headerEncoder, V5ClientEncoder v5ClientEncoder, Utils utils) {
 
         this.ssl = ssl;
         this.params = params;
         this.headerEncoder = headerEncoder;
-        this.v4ClientEncoder = v4ClientEncoder;
+        this.v5ClientEncoder = v5ClientEncoder;
         this.utils = utils;
     }
 
     @Override
-    public void channelRead0(final ChannelHandlerContext ctx, final Socks4CommandRequest request) {
+    public void channelRead0(final ChannelHandlerContext ctx, final Socks5CommandRequest request) {
 
-        // define a promise to handle the connection to the remote server
+        // defind a promise to handle the connection to the remote server
         Promise<Channel> promise = ctx.executor().newPromise();
         promise.addListener(
                 (FutureListener<Channel>) future -> {
@@ -89,30 +89,27 @@ public final class V4ConnectHandler extends SimpleChannelInboundHandler<Socks4Co
                         // You will need something more complicated to identify both
                         // and server in the real world.
                         pipeline.addLast(ssl.sslCtx.newHandler(ch.alloc(), params.getRemoteHost(), params.getRemotePort()),
-                                // backend inbound decoder: standard socks4 command response
-                                new V4ClientDecoder(),
-                                new V4AckHandler(promise),
-                                // backend outbound encoder
-                                v4ClientEncoder,
-                                // backend header encoder
+                                // backend inbound decoder: standard socks5 command response
+                                new V5CommandResDecoder(),
+                                new V5AckHandler(promise),
+                                // backend outbound encoder: standard socks5 command request (Connect or UdP)
+                                v5ClientEncoder,
+                                // illiad header
                                 headerEncoder);
                     }
                 });
 
         // connect to the proxy server, and forward the Socks connect command message to the remote server
-        b.connect(params.getRemoteHost(), params.getRemotePort()).channel().writeAndFlush(request)
-                .addListener(new ChannelFutureListener() {
-                    @Override
-                    public void operationComplete(ChannelFuture future) {
-                        if (future.isSuccess()) {
-                            // Connection established use handler provided results
-                        } else {
-                            // Close the connection if the connection attempt has failed.
-                            utils.closeOnFlush(ctx.channel());
-                            ctx.fireExceptionCaught(future.cause());
-                        }
-                    }
-                });
+        b.connect(params.getRemoteHost(), params.getRemotePort())
+                .addListener((ChannelFutureListener) future -> {
+            if (future.isSuccess()) {
+                // Connection established use handler provided results
+            } else {
+                // Close the connection if the connection attempt has failed.
+                utils.closeOnFlush(ctx.channel());
+                ctx.fireExceptionCaught(future.cause());
+            }
+        });
 
     }
 

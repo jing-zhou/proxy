@@ -8,24 +8,22 @@ import io.netty.handler.codec.DecoderResult;
 import io.netty.handler.codec.ReplayingDecoder;
 import io.netty.handler.codec.socksx.SocksVersion;
 import io.netty.handler.codec.socksx.v5.*;
+import io.netty.handler.codec.socksx.v5.Socks5CommandResponseDecoder.State;
 import org.springframework.beans.factory.annotation.Autowired;
-
-
 import java.util.List;
 
 /**
- * Decodes a single {@link Socks5CommandRequest} from the inbound {@link ByteBuf}s.
+ * Decodes a single {@link Socks5CommandResponse} from the inbound {@link ByteBuf}s.
  * On successful decode, this decoder will forward the received data to the next handler, so that
  * other handler can remove or replace this decoder later.  On failed decode, this decoder will
  * discard the received data, so that other handler closes the connection later.
  */
-
-public class V5CommandReqDecoder extends ReplayingDecoder<State> {
+public class V5CommandResDecoder extends ReplayingDecoder<State> {
 
     @Autowired
     private V5AddressDecoder v5AddressDecoder;
 
-    public V5CommandReqDecoder() {
+    public V5CommandResDecoder() {
         super(State.INIT);
     }
 
@@ -39,27 +37,24 @@ public class V5CommandReqDecoder extends ReplayingDecoder<State> {
                         throw new DecoderException(
                                 "unsupported version: " + version + " (expected: " + SocksVersion.SOCKS5.byteValue() + ')');
                     }
+                    final Socks5CommandStatus status = Socks5CommandStatus.valueOf(in.readByte());
+                    in.skipBytes(1); // Reserved
+                    final Socks5AddressType addrType = Socks5AddressType.valueOf(in.readByte());
+                    final String addr = v5AddressDecoder.decodeAddress(addrType, in);
+                    final int port = ByteBufUtil.readUnsignedShortBE(in);
 
-                    final Socks5CommandType type = Socks5CommandType.valueOf(in.readByte());
-                    in.skipBytes(1); // RSV
-                    final Socks5AddressType dstAddrType = Socks5AddressType.valueOf(in.readByte());
-                    final String dstAddr = v5AddressDecoder.decodeAddress(dstAddrType, in);
-                    final int dstPort = ByteBufUtil.readUnsignedShortBE(in);
-
-                    out.add(new DefaultSocks5CommandRequest(type, dstAddrType, dstAddr, dstPort));
-                    checkpoint(State.SUCCESS);
+                    out.add(new DefaultSocks5CommandResponse(status, addrType, addr, port));
+                    checkpoint(io.netty.handler.codec.socksx.v5.Socks5CommandResponseDecoder.State.SUCCESS);
                 }
                 case SUCCESS: {
                     int readableBytes = actualReadableBytes();
                     if (readableBytes > 0) {
                         out.add(in.readRetainedSlice(readableBytes));
                     }
-                    ctx.pipeline().remove(this);
                     break;
                 }
                 case FAILURE: {
                     in.skipBytes(actualReadableBytes());
-                    ctx.pipeline().remove(this);
                     break;
                 }
             }
@@ -69,15 +64,15 @@ public class V5CommandReqDecoder extends ReplayingDecoder<State> {
     }
 
     private void fail(List<Object> out, Exception cause) {
-        checkpoint(State.FAILURE);
-
-        Socks5Message m = new DefaultSocks5CommandRequest(
-                Socks5CommandType.CONNECT, Socks5AddressType.IPv4, "0.0.0.0", 1);
-        if (cause instanceof DecoderException) {
-            m.setDecoderResult(DecoderResult.failure(cause));
-        } else {
-            m.setDecoderResult(DecoderResult.failure(new DecoderException(cause)));
+        if (!(cause instanceof DecoderException)) {
+            cause = new DecoderException(cause);
         }
+
+        checkpoint(io.netty.handler.codec.socksx.v5.Socks5CommandResponseDecoder.State.FAILURE);
+
+        Socks5Message m = new DefaultSocks5CommandResponse(
+                Socks5CommandStatus.FAILURE, Socks5AddressType.IPv4, null, 0);
+        m.setDecoderResult(DecoderResult.failure(cause));
         out.add(m);
     }
 }
